@@ -12,5 +12,18 @@
       <field name="target">new</field>
     </record>
     
+    <record id="view_account_online_wizard_form_ext" model="ir.ui.view">
+        <field name="name">account.online.wizard.form.ext</field>
+        <field name="model">account.online.wizard</field>
+        <field name="inherit_id" ref="account_online_sync.view_account_online_wizard_form"/>
+        <field name="arch" type="xml">
+        	<field name="status" invisible="1"/>
+            <field name="method" invisible="1"/>
+            <field name="number_added" position="after">
+            	<field name="transactions" attrs="{'invisible': [('method', '=', 'add')]}"/>
+            </field>
+        </field>
+    </record>
+
   </data>
 </odoo>

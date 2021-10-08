@@ -11,6 +11,12 @@ from odoo.tools.translate import _
 
 _logger = logging.getLogger(__name__)
 
+class OnlineAccountWizard(models.TransientModel):
+    _inherit = 'account.online.wizard'
+
+    transactions = fields.Html(readonly=True)
+    status = fields.Selection([('success', 'Success'), ('failed', 'Failed'), ('cancelled', 'Cancelled')], readonly=True)
+    method = fields.Selection([('add', 'add'), ('edit', 'edit'), ('refresh', 'refresh')], readonly=True)
 
 class YodleeProviderAccountExt(models.Model):
     _inherit = ['account.online.provider']
@@ -58,27 +64,20 @@ class YodleeProviderAccountExt(models.Model):
         beta = False
         if provider != 'yodlee':
             return super(YodleeProviderAccountExt, self).get_login_form(site_id, provider)
-        resp_json = self.yodlee_fetch('/user/accessTokens', {'appIds': '10003600'}, {}, 'GET')
-        callbackUrl = '/sync_status/' + str(self.env.context.get('journal_id', 0)) + '/' + state
-        paramsUrl = 'flow=%s&siteId=%s&callback=' if state == 'add' else 'flow=%s&siteAccountId=%s&callback='
-        paramsUrl = paramsUrl % (state, site_id)
-        if not resp_json:
-            raise UserError(_('Could not retrieve login form for siteId: %s (%s)' % (site_id, provider)))
-        return {
-                'type': 'ir.actions.client',
-                'tag': 'yodlee_online_sync_widget',
-                'target': 'new',
-                'fastlinkUrl': self._get_yodlee_credentials()['fastlink_url'],
-                'login_form': resp_json,
-                'context': self.env.context,
-                'paramsUrl': paramsUrl,
-                'callbackUrl': callbackUrl,
-                'userToken': self.env.user.company_id.yodlee_user_access_token,
-                'beta': beta,
-                'state': state,
-                'accessTokens': resp_json.get('user').get('accessTokens')[0],
-                'context': self.env.context,
-                }
+        return self.open_yodlee_action(site_id, state)
+        
+
+    def update_credentials(self):
+        if self.provider_type != 'yodlee':
+            return super(YodleeProviderAccount, self).update_credentials()
+        self.ensure_one()
+        return self.open_yodlee_action(self.provider_account_identifier, 'edit')
+
+    def manual_sync(self, return_action=True):
+        if self.provider_type != 'yodlee':
+            return super(YodleeProviderAccount, self).manual_sync()
+        self.ensure_one()
+        return self.open_yodlee_action(self.provider_account_identifier, 'refresh')
 
     def open_yodlee_action(self, identifier, state, beta=False):
         resp_json = self.yodlee_fetch('/user/accessTokens', {'appIds': '10003600'}, {}, 'GET')
@@ -198,3 +197,44 @@ class YodleeProviderAccountExt(models.Model):
         action = self.env.ref('account_online_sync.action_account_online_wizard_form').read()[0]
         action['res_id'] = transient.id
         return action['id']
+
+
+    @api.multi
+    def add_update_accounts(self):
+        params = {'providerAccountId': self.provider_account_identifier}
+        resp_json = self.yodlee_fetch('/accounts/', params, {}, 'GET')
+        accounts = resp_json.get('account', [])
+        accounts_added = self.env['account.online.journal']
+        transactions = []
+        for account in accounts:
+            if account.get('CONTAINER') in ('bank', 'creditCard'):
+                vals = {
+                    'yodlee_account_status': account.get('accountStatus'),
+                    'yodlee_status_code': account.get('refreshinfo', {}).get('statusCode'),
+                    #'balance': account.get('currentBalance', {}).get('amount', 0) if account.get('CONTAINER') == 'bank' else account.get('runningBalance', {}).get('amount', 0)
+                    #Updated similar to v13 module
+                    'balance': account.get('currentBalance', account.get('balance', {})).get('amount', 0) if account.get('CONTAINER') == 'bank' else account.get('runningBalance', {}).get('amount', 0)
+                }
+                account_search = self.env['account.online.journal'].search([('account_online_provider_id', '=', self.id), ('online_identifier', '=', account.get('id'))], limit=1)
+                if len(account_search) == 0:
+                    dt = datetime.datetime
+                    # Since we just create account, set last sync to 15 days in the past to retrieve transaction from latest 15 days
+                    last_sync = dt.strftime(dt.strptime(self.last_refresh, DEFAULT_SERVER_DATETIME_FORMAT) - datetime.timedelta(days=15), DEFAULT_SERVER_DATE_FORMAT)
+                    vals.update({
+                        'name': account.get('accountName', 'Account'),
+                        'online_identifier': account.get('id'),
+                        'account_online_provider_id': self.id,
+                        'account_number': account.get('accountNumber'),
+                        'last_sync': last_sync,
+                    })
+                    with self.pool.cursor() as cr:
+                        acc = self.with_env(self.env(cr=cr)).env['account.online.journal'].create(vals)
+                    accounts_added += acc
+                else:
+                    with self.pool.cursor() as cr:
+                        account_search.with_env(self.env(cr=cr)).env['account.online.journal'].write(vals)
+                    # Also retrieve transaction if status is SUCCESS
+                    if vals.get('yodlee_status_code') == 0 and account_search.journal_ids:
+                        transactions_count = account_search.retrieve_transactions()
+                        transactions.append({'journal': account_search.journal_ids[0].name, 'count': transactions_count})
+        return {'accounts_added': accounts_added, 'transactions': transactions}
