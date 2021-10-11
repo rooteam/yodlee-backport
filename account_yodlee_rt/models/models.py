@@ -57,8 +57,7 @@ class YodleeProviderAccountExt(models.Model):
         state = 'add'
         beta = False
         if provider != 'yodlee':
-            return super(YodleeProviderAccount, self).get_login_form(site_id, provider)
-        # resp_json = self.yodlee_fetch('/providers/'+str(site_id), {}, {}, 'GET')
+            return super(YodleeProviderAccountExt, self).get_login_form(site_id, provider)
         resp_json = self.yodlee_fetch('/user/accessTokens', {'appIds': '10003600'}, {}, 'GET')
         callbackUrl = '/sync_status/' + str(self.env.context.get('journal_id', 0)) + '/' + state
         paramsUrl = 'flow=%s&siteId=%s&callback=' if state == 'add' else 'flow=%s&siteAccountId=%s&callback='
@@ -81,6 +80,29 @@ class YodleeProviderAccountExt(models.Model):
                 'context': self.env.context,
                 }
 
+    def open_yodlee_action(self, identifier, state, beta=False):
+        resp_json = self.yodlee_fetch('/user/accessTokens', {'appIds': '10003600'}, {}, 'GET')
+        callbackUrl = '/sync_status/' + str(self.env.context.get('journal_id', 0)) + '/' + state
+        paramsUrl = 'flow=%s&siteId=%s&callback=' if state == 'add' else 'flow=%s&siteAccountId=%s&callback='
+        paramsUrl = paramsUrl % (state, identifier)
+        # if state == 'add' and not resp_json:
+        #     raise UserError(_('Could not retrieve login form for siteId: %s (%s)' % (site_id, provider)))
+        return {
+                'type': 'ir.actions.client',
+                'tag': 'yodlee_online_sync_widget',
+                'target': 'new',
+                'fastlinkUrl': self._get_yodlee_credentials()['fastlink_url'],
+                'paramsUrl': paramsUrl,
+                'callbackUrl': callbackUrl,
+                'userToken': self.env.user.company_id.yodlee_user_access_token,
+                'beta': beta,
+                'state': state,
+                'accessTokens': resp_json.get('user').get('accessTokens')[0],
+                'context': self.env.context,
+                'login_form': resp_json
+                }
+        
+
     def _getStatus(self, status):
         if status == 1:
             return 'ACTION_ABANDONED'
@@ -92,7 +114,7 @@ class YodleeProviderAccountExt(models.Model):
             return status
 
     def callback_institution(self, informations, state, journal_id):
-        action = self.env.ref('account.open_account_journal_dashboard_kanban')
+        action = self.env.ref('account.open_account_journal_dashboard_kanban').id
         try:
             resp_json = json.loads(informations.get('JSONcallBackStatus', ''))
         except ValueError:
@@ -100,7 +122,7 @@ class YodleeProviderAccountExt(models.Model):
         element = type(resp_json) is list and len(resp_json) > 0 and resp_json[0] or {}
         if element.get('providerAccountId'):
             new_provider_account = self.search([('provider_account_identifier', '=', element.get('providerAccountId')),
-                ('company_id', '=', self.env.company.id)], limit=1)
+                ('company_id', '=', self.env.user.company_id.id)], limit=1)
             if len(new_provider_account) == 0:
                 vals = {
                     'name': element.get('bankName') or _('Online institution'),
@@ -136,3 +158,43 @@ class YodleeProviderAccountExt(models.Model):
             return self.show_result(res)
         else:
             return action
+
+
+    def show_result(self, values):
+        """ This method is used to launch the end process of adding/refreshing/editing an online account provider
+            It will create a wizard where user will be notified of the result of the call and if new accounts have
+            been fetched, he will be able to link them to different journals
+        """
+        number_added = len(values.get('added', []))
+        status = 'success'
+        if values.get('status') == 'FAILED' or values.get('status') == '3':
+            status = 'failed'
+        if values.get('status') == 'ACTION_ABANDONED' or values.get('status') == '1':
+            status = 'cancelled'
+        if values.get('transactions'):
+            transactions = "<br/><br/><p>%s</p>" % (_('The following transactions have been loaded in the system.'),)
+            for tr in values.get('transactions'):
+                transactions += '<br/><p>%s: <strong>%s</strong> - %s %s</p>' % (_('Journal'), tr.get('journal'), tr.get('count'), _('transactions loaded'))
+        else:
+            transactions = '<br/><br/><p>%s</p>' % (_('No new transactions have been loaded in the system.'),)
+        hide_table = False
+        if number_added == 0:
+            hide_table = True
+        transient = self.env['account.online.wizard'].create({
+            'number_added': number_added,
+            'status': status,
+            'method': values.get('method'),
+            'message': values.get('message', _('Unknown reason')),
+            'transactions': transactions,
+            'hide_table': hide_table,
+        })
+        for account in values.get('added', []):
+            vals = {'online_account_id': account.id, 'account_online_wizard_id': transient.id}
+            # If we are adding an account for the first time and only have one, link it to journal
+            if (number_added == 1 and values.get('method') == 'add'):
+                vals['journal_id'] = values.get('journal_id')
+            self.env['account.online.link.wizard'].create(vals)
+
+        action = self.env.ref('account_online_sync.action_account_online_wizard_form').read()[0]
+        action['res_id'] = transient.id
+        return action['id']

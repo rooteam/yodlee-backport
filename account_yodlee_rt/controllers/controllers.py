@@ -20,8 +20,7 @@ class YodleeController(http.Controller):
         # read action id and redirect to it with correct parameters
         if provider_identifier != '':
             #action_id = request.env.ref('account_yodlee_rt.yodlee_widget').id
-            request.env['account.online.provider'].callback_institution(kw, state, journal)
-            return
+            action_id = request.env['account.online.provider'].callback_institution(kw, state, journal)
         else:
             action_id = request.env.ref('account.open_account_journal_dashboard_kanban').id
         params = {
