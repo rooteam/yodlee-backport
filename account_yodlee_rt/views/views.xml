@@ -17,11 +17,10 @@
         <field name="model">account.online.wizard</field>
         <field name="inherit_id" ref="account_online_sync.view_account_online_wizard_form"/>
         <field name="arch" type="xml">
-        	<field name="status" invisible="1"/>
-            <field name="method" invisible="1"/>
-            <field name="number_added" position="after">
+            <button name="new_institution" position="before">
+              <field name="method" invisible="1"/>
             	<field name="transactions" attrs="{'invisible': [('method', '=', 'add')]}"/>
-            </field>
+            </button>
         </field>
     </record>
 
