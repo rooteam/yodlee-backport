@@ -69,15 +69,15 @@ class YodleeProviderAccountExt(models.Model):
 
     def update_credentials(self):
         if self.provider_type != 'yodlee':
-            return super(YodleeProviderAccount, self).update_credentials()
+            return super(YodleeProviderAccountExt, self).update_credentials()
         self.ensure_one()
         return self.open_yodlee_action(self.provider_account_identifier, 'edit')
 
-    def manual_sync(self, return_action=True):
-        if self.provider_type != 'yodlee':
-            return super(YodleeProviderAccount, self).manual_sync()
-        self.ensure_one()
-        return self.open_yodlee_action(self.provider_account_identifier, 'refresh')
+    # def manual_sync(self, return_action=True):
+    #     if self.provider_type != 'yodlee':
+    #         return super(YodleeProviderAccountExt, self).manual_sync()
+    #     self.ensure_one()
+    #     return self.open_yodlee_action(self.provider_account_identifier, 'refresh')
 
     def open_yodlee_action(self, identifier, state, beta=False):
         resp_json = self.yodlee_fetch('/user/accessTokens', {'appIds': '10003600'}, {}, 'GET')
